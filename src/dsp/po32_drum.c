@@ -564,6 +564,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (atoi(val) == 1) save_kit(m);
     } else if (strcmp(key, "randomize") == 0) {
         if (atoi(val) == 1) randomize_kit(m);
+    } else if (strcmp(key, "randomize_inst") == 0) {
+        int idx = atoi(val);
+        if (idx >= 0 && idx < NUM_INSTRUMENTS)
+            randomize_patch(&m->patches[idx], ROLE_MAP[idx]);
     } else if (strcmp(key, "inst") == 0) {
         int v = atoi(val);
         if (v >= 0 && v < NUM_INSTRUMENTS) m->selected_inst = v;

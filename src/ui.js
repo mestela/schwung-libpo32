@@ -71,6 +71,10 @@ function makeInstParams(instIdx) {
             get: () => parseInt(host_module_get_param('inst_level') || '80'),
             set: (v) => { host_module_set_param('inst', String(instIdx)); host_module_set_param('inst_level', String(v)); },
             min: 0, max: 100, step: 2
+        }),
+        createAction('Randomize', () => {
+            host_module_set_param('randomize_inst', String(instIdx));
+            needsRedraw = true;
         })
     ];
 }
