@@ -604,7 +604,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     po32_drum_t *m = (po32_drum_t *)instance;
     if (strcmp(key, "name") == 0) {
-        return snprintf(buf, buf_len, "libpo32");
+        return snprintf(buf, buf_len, "Libpo32");
     } else if (strcmp(key, "kit") == 0) {
         return snprintf(buf, buf_len, "%d", m->kit_index);
     } else if (strcmp(key, "kit_count") == 0) {

@@ -119,10 +119,11 @@ globalThis.init = function() {
             loadKitNames();
             needsRedraw = true;
         }),
-        createAction('Randomize', () => host_module_set_param('randomize', '1'))
+        createAction('Randomize', () => host_module_set_param('randomize', '1')),
+        createAction('[Swap module...]', () => host_swap_module())
     ];
 
-    menuStack.push({ title: 'libpo32', items: params });
+    menuStack.push({ title: 'Libpo32', items: params });
     needsRedraw = true;
 };
 

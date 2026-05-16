@@ -1,8 +1,8 @@
 {
   "id": "po32-drum",
-  "name": "libpo32",
+  "name": "Libpo32",
   "description": "Drum synthesizer powered by libpo32",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "mestela",
   "capabilities": {
     "chainable": true,
@@ -10,7 +10,7 @@
     "ui_hierarchy": {
       "levels": {
         "root": {
-          "name": "libpo32",
+          "name": "Libpo32",
           "count_param": "kit_count",
           "list_param": "kit",
           "name_param": "kit_name",
