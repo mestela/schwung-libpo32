@@ -560,6 +560,24 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     } else if (strcmp(key, "decay") == 0) {
         float v = (float)atof(val);
         m->decay_scale = v < 0.1f ? 0.1f : (v > 3.0f ? 3.0f : v);
+    } else if (strcmp(key, "state") == 0) {
+        float fval;
+        if (json_get_float(val, "kit", &fval)) m->kit_index = (int)fval;
+        if (json_get_float(val, "level", &fval)) m->level = fval;
+        if (json_get_float(val, "decay", &fval)) m->decay_scale = fval;
+        for (int i = 0; i < NUM_INSTRUMENTS; i++) {
+            char ikey[8]; snprintf(ikey, sizeof(ikey), "i%d", i);
+            char csv[256];
+            if (!json_get_str(val, ikey, csv, sizeof(csv))) continue;
+            po32_patch_params_t *p = &m->patches[i];
+            char *tok = csv;
+            for (int f = 0; f < 21; f++) {
+                *patch_field(p, f) = (float)atof(tok);
+                tok = strchr(tok, ',');
+                if (!tok) break;
+                tok++;
+            }
+        }
     } else if (strcmp(key, "save_kit") == 0) {
         if (atoi(val) == 1) save_kit(m);
     } else if (strcmp(key, "randomize") == 0) {
@@ -635,6 +653,27 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%.3f", (double)m->decay_scale);
     } else if (strcmp(key, "inst") == 0) {
         return snprintf(buf, buf_len, "%d", m->selected_inst);
+    } else if (strcmp(key, "state") == 0) {
+        int pos = 0;
+        pos += snprintf(buf + pos, buf_len - pos,
+            "{\"kit\":%d,\"level\":%.4f,\"decay\":%.4f",
+            m->kit_index, (double)m->level, (double)m->decay_scale);
+        for (int i = 0; i < NUM_INSTRUMENTS && pos < buf_len - 10; i++) {
+            po32_patch_params_t *p = &m->patches[i];
+            pos += snprintf(buf + pos, buf_len - pos,
+                ",\"i%d\":\"%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\"",
+                i,
+                (double)p->OscWave, (double)p->OscFreq, (double)p->OscAtk, (double)p->OscDcy,
+                (double)p->ModMode, (double)p->ModRate, (double)p->ModAmt,
+                (double)p->NFilMod, (double)p->NFilFrq, (double)p->NFilQ,
+                (double)p->NEnvMod, (double)p->NEnvAtk, (double)p->NEnvDcy,
+                (double)p->Mix, (double)p->DistAmt, (double)p->EQFreq, (double)p->EQGain,
+                (double)p->Level, (double)p->OscVel, (double)p->NVel, (double)p->ModVel);
+        }
+        if (pos < buf_len - 1) buf[pos++] = '}';
+        if (pos < buf_len) buf[pos] = '\0';
+        return pos;
     } else {
         const po32_patch_params_t *p = &m->patches[m->selected_inst];
         if (strcmp(key, "inst_wave") == 0) {

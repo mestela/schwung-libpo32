@@ -2,7 +2,7 @@
   "id": "po32-drum",
   "name": "Libpo32",
   "description": "Drum synthesizer powered by libpo32",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "mestela",
   "capabilities": {
     "chainable": true,
