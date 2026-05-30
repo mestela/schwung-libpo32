@@ -4,6 +4,8 @@ A drum synthesizer module for [Schwung](https://github.com/charlesvestal/schwung
 
 16 synthesis voices mapped to the General MIDI drum layout (MIDI notes 36–51). Three bundled kits included. Save your own kits directly from the module.
 
+Demo: https://www.youtube.com/watch?v=blKvmuEcvjQ
+
 ## Features
 
 - 16 independently programmable synthesis voices (GM drum layout: Kick, Snare, Closed HH, etc.)
