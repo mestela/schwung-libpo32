@@ -387,12 +387,16 @@ static float rnd_one_of3(float a, float b, float c) {
     float r = rnd(); return r < 0.333f ? a : (r < 0.666f ? b : c);
 }
 
-typedef enum { ROLE_KICK, ROLE_SNARE, ROLE_HAT, ROLE_TOM, ROLE_PERC } drum_role_t;
+typedef enum { ROLE_KICK, ROLE_SNARE, ROLE_CLAP, ROLE_HAT, ROLE_TOM, ROLE_PERC } drum_role_t;
 static const drum_role_t ROLE_MAP[NUM_INSTRUMENTS] = {
-    ROLE_KICK,  ROLE_SNARE, ROLE_HAT,   ROLE_HAT,
-    ROLE_TOM,   ROLE_TOM,   ROLE_PERC,  ROLE_PERC,
-    ROLE_KICK,  ROLE_SNARE, ROLE_HAT,   ROLE_PERC,
-    ROLE_TOM,   ROLE_PERC,  ROLE_PERC,  ROLE_SNARE
+    /* P01 Kick     P02 Rim      P03 Snare    P04 Clap   */
+    ROLE_KICK,  ROLE_PERC,  ROLE_SNARE, ROLE_CLAP,
+    /* P05 Snare2   P06 Lo Tom   P07 Cls HH   P08 Flr Tom */
+    ROLE_SNARE, ROLE_TOM,   ROLE_HAT,   ROLE_TOM,
+    /* P09 Pdl HH   P10 Mid Tom  P11 Opn HH   P12 LM Tom */
+    ROLE_HAT,   ROLE_TOM,   ROLE_HAT,   ROLE_TOM,
+    /* P13 HM Tom   P14 Crash    P15 Hi Tom   P16 Ride   */
+    ROLE_TOM,   ROLE_HAT,   ROLE_TOM,   ROLE_HAT,
 };
 
 static void randomize_patch(po32_patch_params_t *p, drum_role_t role) {
@@ -434,6 +438,27 @@ static void randomize_patch(po32_patch_params_t *p, drum_role_t role) {
         p->Level   = rnd_range(0.50f, 0.90f);
         p->OscVel  = rnd_range(0.4f, 1.0f);
         p->NVel    = rnd_range(0.3f, 1.0f);
+        break;
+    case ROLE_CLAP:
+        /* Pure noise burst — no oscillator contribution */
+        p->OscWave = 0.0f;
+        p->OscFreq = 0.0f;
+        p->OscAtk  = 0.0f;
+        p->OscDcy  = 0.0f;
+        p->ModMode = 0.0f;
+        p->ModRate = 0.0f;
+        p->ModAmt  = 0.0f;
+        p->NFilMod = rnd() < 0.5f ? 0.0f : 0.5f;
+        p->NFilFrq = rnd_range(0.40f, 0.80f);
+        p->NFilQ   = rnd_range(0.1f, 0.5f);
+        p->NEnvMod = rnd() < 0.6f ? 0.5f : 1.0f;
+        p->NEnvAtk = rnd_range(0.0f, 0.08f);
+        p->NEnvDcy = rnd_range(0.10f, 0.50f);
+        p->Mix     = 0.0f;
+        p->DistAmt = rnd_range(0.0f, 0.35f);
+        p->Level   = rnd_range(0.55f, 0.95f);
+        p->OscVel  = 0.0f;
+        p->NVel    = rnd_range(0.5f, 1.0f);
         break;
     case ROLE_HAT:
         p->OscWave = 0.0f;

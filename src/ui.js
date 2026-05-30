@@ -20,8 +20,15 @@ function loadKitNames() {
     kitOptions.splice(0, kitOptions.length, ...kitNames.map((_, i) => String(i)));
 }
 
+const PAD_NAMES = [
+    'Kick', 'Rim', 'Snare', 'Clap',
+    'Snare 2', 'Lo Tom', 'Closed HH', 'Floor Tom',
+    'Pedal HH', 'Mid Tom', 'Open HH', 'Lo-Mid Tom',
+    'Hi-Mid Tom', 'Crash', 'Hi Tom', 'Ride'
+];
+
 function padLabel(i) {
-    return 'P' + String(i + 1).padStart(2, '0');
+    return PAD_NAMES[i] || ('P' + String(i + 1).padStart(2, '0'));
 }
 
 function makeInstParams(instIdx) {
