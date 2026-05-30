@@ -416,7 +416,7 @@ static void randomize_patch(po32_patch_params_t *p, drum_role_t role) {
         p->NEnvDcy = rnd_range(0.05f, 0.40f);
         p->Mix     = rnd_range(0.60f, 1.0f);
         p->DistAmt = rnd_range(0.0f, 0.40f);
-        p->Level   = rnd_range(0.60f, 0.95f);
+        p->Level   = rnd_range(0.70f, 0.95f);
         p->OscVel  = rnd_range(0.5f, 1.0f);
         p->NVel    = rnd_range(0.0f, 0.4f);
         break;
@@ -440,25 +440,28 @@ static void randomize_patch(po32_patch_params_t *p, drum_role_t role) {
         p->NVel    = rnd_range(0.3f, 1.0f);
         break;
     case ROLE_CLAP:
-        /* Pure noise burst — no oscillator contribution */
-        p->OscWave = 0.0f;
-        p->OscFreq = 0.0f;
+        /* In this engine Mix=0 is pure oscillator, Mix=1 is pure noise.
+         * A clap blends both: high-freq oscillator with random pitch mod (ModMode=Noise)
+         * for the crack texture, plus band-pass filtered noise for the body.
+         * Mix=0.2-0.5 keeps the oscillator at full gain while ramping in noise. */
+        p->OscWave = rnd() < 0.7f ? 0.0f : 0.5f;    /* Sine or Triangle */
+        p->OscFreq = rnd_range(0.42f, 0.68f);         /* ~600–2500 Hz */
         p->OscAtk  = 0.0f;
-        p->OscDcy  = 0.0f;
-        p->ModMode = 0.0f;
-        p->ModRate = 0.0f;
-        p->ModAmt  = 0.0f;
-        p->NFilMod = rnd() < 0.5f ? 0.0f : 0.5f;
-        p->NFilFrq = rnd_range(0.40f, 0.80f);
-        p->NFilQ   = rnd_range(0.1f, 0.5f);
-        p->NEnvMod = rnd() < 0.6f ? 0.5f : 1.0f;
-        p->NEnvAtk = rnd_range(0.0f, 0.08f);
-        p->NEnvDcy = rnd_range(0.10f, 0.50f);
-        p->Mix     = 0.0f;
-        p->DistAmt = rnd_range(0.0f, 0.35f);
-        p->Level   = rnd_range(0.55f, 0.95f);
-        p->OscVel  = 0.0f;
-        p->NVel    = rnd_range(0.5f, 1.0f);
+        p->OscDcy  = rnd_range(0.20f, 0.45f);         /* ~120–280 ms */
+        p->ModMode = 1.0f;                             /* Noise/random pitch → crack */
+        p->ModRate = rnd_range(0.0f, 0.25f);
+        p->ModAmt  = rnd_range(0.20f, 0.50f);
+        p->NFilMod = 0.5f;                             /* Band-pass for noise body */
+        p->NFilFrq = rnd_range(0.52f, 0.78f);
+        p->NFilQ   = rnd_range(0.10f, 0.40f);
+        p->NEnvMod = rnd() < 0.5f ? 0.0f : 1.0f;     /* Exp or Modulated clap */
+        p->NEnvAtk = rnd_range(0.01f, 0.07f);
+        p->NEnvDcy = rnd_range(0.12f, 0.40f);
+        p->Mix     = rnd_range(0.20f, 0.50f);          /* Blend: osc always full + noise */
+        p->DistAmt = rnd_range(0.05f, 0.30f);
+        p->Level   = rnd_range(0.70f, 0.95f);
+        p->OscVel  = rnd_range(0.40f, 0.80f);
+        p->NVel    = rnd_range(0.40f, 0.80f);
         break;
     case ROLE_HAT:
         p->OscWave = 0.0f;
@@ -640,6 +643,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         } else if (strcmp(key, "inst_level") == 0) {
             float v = (float)atoi(val) / 100.0f;
             p->Level = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        } else if (strcmp(key, "inst_noise_filt") == 0) {
+            int v = atoi(val);
+            p->NFilMod = v <= 0 ? 0.0f : (v == 1 ? 0.5f : 1.0f);
+        } else if (strcmp(key, "inst_noise_env") == 0) {
+            int v = atoi(val);
+            p->NEnvMod = v <= 0 ? 0.0f : (v == 1 ? 0.5f : 1.0f);
         }
     }
 }
@@ -717,6 +726,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return snprintf(buf, buf_len, "%d", (int)(p->DistAmt * 100.0f + 0.5f));
         } else if (strcmp(key, "inst_level") == 0) {
             return snprintf(buf, buf_len, "%d", (int)(p->Level * 100.0f + 0.5f));
+        } else if (strcmp(key, "inst_noise_filt") == 0) {
+            return snprintf(buf, buf_len, "%d", p->NFilMod < 0.33f ? 0 : (p->NFilMod < 0.67f ? 1 : 2));
+        } else if (strcmp(key, "inst_noise_env") == 0) {
+            return snprintf(buf, buf_len, "%d", p->NEnvMod < 0.33f ? 0 : (p->NEnvMod < 0.67f ? 1 : 2));
         }
     }
     return -1;

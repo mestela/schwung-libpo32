@@ -33,8 +33,10 @@ function padLabel(i) {
 
 function makeInstParams(instIdx) {
     host_module_set_param('inst', String(instIdx));
-    const waves = ['Sine', 'Tri', 'Saw'];
-    const mods  = ['Drop', 'Sine', 'Noise'];
+    const waves    = ['Sine', 'Tri', 'Saw'];
+    const mods     = ['Drop', 'Sine', 'Noise'];
+    const nfilts   = ['LP', 'BP', 'HP'];
+    const nenvs    = ['Exp', 'Lin', 'Clap'];
     return [
         createBack(),
         createEnum('Wave', {
@@ -78,6 +80,18 @@ function makeInstParams(instIdx) {
             get: () => parseInt(host_module_get_param('inst_level') || '80'),
             set: (v) => { host_module_set_param('inst', String(instIdx)); host_module_set_param('inst_level', String(v)); },
             min: 0, max: 100, step: 2
+        }),
+        createEnum('N.Filt', {
+            get: () => host_module_get_param('inst_noise_filt') || '0',
+            set: (v) => { host_module_set_param('inst', String(instIdx)); host_module_set_param('inst_noise_filt', v); },
+            options: ['0', '1', '2'],
+            format: (v) => nfilts[parseInt(v)] || v
+        }),
+        createEnum('N.Env', {
+            get: () => host_module_get_param('inst_noise_env') || '0',
+            set: (v) => { host_module_set_param('inst', String(instIdx)); host_module_set_param('inst_noise_env', v); },
+            options: ['0', '1', '2'],
+            format: (v) => nenvs[parseInt(v)] || v
         }),
         createAction('Randomize', () => {
             host_module_set_param('randomize_inst', String(instIdx));
