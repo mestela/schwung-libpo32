@@ -41,7 +41,7 @@ echo "Compiling DSP..."
     src/dsp/po32_synth.c \
     src/dsp/po32_patch_import.c \
     -o build/dsp.so \
-    -lm
+    -lm -lpthread
 
 echo "Packaging..."
 cp build/dsp.so    "$DIST_DIR/dsp.so"

@@ -12,6 +12,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -36,6 +37,13 @@
 #define KIT_TYPE_DIR  0   /* kits/ subdirectory of .mtdrum files */
 #define KIT_TYPE_JSON 1   /* presets/ JSON file */
 
+/* Voice render states — written with __ATOMIC_RELEASE, read with __ATOMIC_ACQUIRE */
+#define VOICE_IDLE      0
+#define VOICE_RENDERING 1
+#define VOICE_ACTIVE    2
+
+#define RENDER_QUEUE_SIZE 32
+
 static const host_api_v1_t *g_host = NULL;
 
 /* ── voice ───────────────────────────────────────────────────────── */
@@ -44,8 +52,16 @@ typedef struct {
     float  *buf;
     size_t  len;
     size_t  pos;
-    int     active;
+    int     state;  /* VOICE_IDLE / VOICE_RENDERING / VOICE_ACTIVE */
 } voice_t;
+
+/* ── render job ──────────────────────────────────────────────────── */
+
+typedef struct {
+    int                 voice_idx;
+    int                 velocity;
+    po32_patch_params_t params;
+} render_job_t;
 
 /* ── module state ────────────────────────────────────────────────── */
 
@@ -58,6 +74,22 @@ typedef struct {
     voice_t voices[MAX_VOICES];
     float  *voice_bufs;
     size_t  voice_buf_frames;
+
+    /* background render worker */
+    pthread_t       render_thread;
+    pthread_mutex_t render_mutex;
+    pthread_cond_t  render_cond;
+    int             render_quit;
+    render_job_t    render_queue[RENDER_QUEUE_SIZE];
+    int             render_q_head;
+    int             render_q_tail;
+
+    /* log ring buffer — worker writes, audio thread flushes (host log not thread-safe) */
+#define LOG_RING_SIZE  32
+#define LOG_MSG_LEN    96
+    char log_ring[LOG_RING_SIZE][LOG_MSG_LEN];
+    int  log_write;  /* written by render thread (atomic) */
+    int  log_read;   /* read by audio/main thread */
 
     /* unified kit list (built-in dirs + saved JSON) */
     char kit_names[MAX_KITS][MAX_KIT_NAME]; /* display name */
@@ -78,6 +110,7 @@ typedef struct {
 
 /* ── logging ─────────────────────────────────────────────────────── */
 
+/* Direct log — only safe from the audio/main thread */
 static void plog(const char *msg) {
     if (g_host && g_host->log) g_host->log(msg);
 }
@@ -90,6 +123,28 @@ static void plogf(po32_drum_t *m, const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     plog(buf);
+}
+
+/* Buffered log — safe from any thread; flushed by flush_log() on the audio thread */
+static void plog_async(po32_drum_t *m, const char *fmt, ...) {
+    char buf[LOG_MSG_LEN];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    int next = (__atomic_load_n(&m->log_write, __ATOMIC_RELAXED) + 1) % LOG_RING_SIZE;
+    if (next == __atomic_load_n(&m->log_read, __ATOMIC_ACQUIRE)) return; /* ring full, drop */
+    snprintf(m->log_ring[m->log_write], LOG_MSG_LEN, "%s", buf);
+    __atomic_store_n(&m->log_write, next, __ATOMIC_RELEASE);
+}
+
+static void flush_log(po32_drum_t *m) {
+    int w = __atomic_load_n(&m->log_write, __ATOMIC_ACQUIRE);
+    while (m->log_read != w) {
+        plog(m->log_ring[m->log_read]);
+        m->log_read = (m->log_read + 1) % LOG_RING_SIZE;
+        w = __atomic_load_n(&m->log_write, __ATOMIC_ACQUIRE);
+    }
 }
 
 /* ── JSON helpers ────────────────────────────────────────────────── */
@@ -347,29 +402,106 @@ static void save_kit(po32_drum_t *m) {
 /* ── voice pool ──────────────────────────────────────────────────── */
 
 static voice_t *alloc_voice(po32_drum_t *m) {
+    /* Prefer a fully idle slot */
+    for (int i = 0; i < MAX_VOICES; i++) {
+        if (__atomic_load_n(&m->voices[i].state, __ATOMIC_ACQUIRE) == VOICE_IDLE)
+            return &m->voices[i];
+    }
+    /* Steal the active voice closest to finishing; never steal RENDERING */
     voice_t *oldest = NULL;
     size_t   oldest_remaining = SIZE_MAX;
     for (int i = 0; i < MAX_VOICES; i++) {
-        if (!m->voices[i].active) return &m->voices[i];
+        if (__atomic_load_n(&m->voices[i].state, __ATOMIC_ACQUIRE) != VOICE_ACTIVE) continue;
         size_t rem = m->voices[i].len - m->voices[i].pos;
         if (rem < oldest_remaining) { oldest_remaining = rem; oldest = &m->voices[i]; }
     }
+    if (oldest) plog("po32: voice steal (all voices busy)");
     return oldest;
+}
+
+/* ── background render worker ────────────────────────────────────── */
+
+static void *render_worker_fn(void *arg) {
+    po32_drum_t *m = (po32_drum_t *)arg;
+    plog_async(m, "po32: render worker started");
+    while (1) {
+        pthread_mutex_lock(&m->render_mutex);
+        while (m->render_q_head == m->render_q_tail && !m->render_quit)
+            pthread_cond_wait(&m->render_cond, &m->render_mutex);
+        if (m->render_quit) {
+            pthread_mutex_unlock(&m->render_mutex);
+            break;
+        }
+        render_job_t job = m->render_queue[m->render_q_head];
+        m->render_q_head = (m->render_q_head + 1) % RENDER_QUEUE_SIZE;
+        pthread_mutex_unlock(&m->render_mutex);
+
+        voice_t *v = &m->voices[job.voice_idx];
+
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+
+        size_t out_len = 0;
+        po32_status_t st = po32_synth_render(
+            &m->synth, &job.params, job.velocity, VOICE_DURATION_S,
+            v->buf, m->voice_buf_frames, &out_len);
+
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        long ms = (t1.tv_sec - t0.tv_sec) * 1000
+                + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+
+        if (st == PO32_OK && out_len > 0) {
+            v->len = out_len;
+            v->pos = 0;
+            plog_async(m, "po32: render voice=%d vel=%d took=%ldms",
+                       job.voice_idx, job.velocity, ms);
+            __atomic_store_n(&v->state, VOICE_ACTIVE, __ATOMIC_RELEASE);
+        } else {
+            plog_async(m, "po32: render failed voice=%d st=%d", job.voice_idx, (int)st);
+            __atomic_store_n(&v->state, VOICE_IDLE, __ATOMIC_RELEASE);
+        }
+    }
+    plog_async(m, "po32: render worker stopped");
+    return NULL;
 }
 
 static void trigger_voice(po32_drum_t *m, int instrument, int velocity) {
     if (instrument < 1 || instrument > NUM_INSTRUMENTS) return;
+
+    voice_t *v = alloc_voice(m);
+    if (!v) {
+        plogf(m, "po32: note dropped, no voice available (inst=%d vel=%d)",
+              instrument, velocity);
+        return;
+    }
+
+    /* Snapshot params on the calling thread before queuing */
     po32_patch_params_t params = m->patches[instrument - 1];
     if (m->decay_scale != 1.0f) {
         params.OscDcy  *= m->decay_scale; if (params.OscDcy  > 1.0f) params.OscDcy  = 1.0f;
         params.NEnvDcy *= m->decay_scale; if (params.NEnvDcy > 1.0f) params.NEnvDcy = 1.0f;
     }
-    voice_t *v = alloc_voice(m);
-    v->pos = 0; v->active = 0;
-    po32_status_t st = po32_synth_render(
-        &m->synth, &params, velocity, VOICE_DURATION_S,
-        v->buf, m->voice_buf_frames, &v->len);
-    if (st == PO32_OK && v->len > 0) v->active = 1;
+
+    int voice_idx = (int)(v - m->voices);
+    __atomic_store_n(&v->state, VOICE_RENDERING, __ATOMIC_RELEASE);
+
+    pthread_mutex_lock(&m->render_mutex);
+    int next_tail = (m->render_q_tail + 1) % RENDER_QUEUE_SIZE;
+    if (next_tail == m->render_q_head) {
+        /* Queue full — release the slot and drop the note */
+        __atomic_store_n(&v->state, VOICE_IDLE, __ATOMIC_RELEASE);
+        plogf(m, "po32: render queue full, note dropped (inst=%d vel=%d)",
+              instrument, velocity);
+        pthread_mutex_unlock(&m->render_mutex);
+        return;
+    }
+    render_job_t *job = &m->render_queue[m->render_q_tail];
+    job->voice_idx = voice_idx;
+    job->velocity  = velocity;
+    job->params    = params;
+    m->render_q_tail = next_tail;
+    pthread_cond_signal(&m->render_cond);
+    pthread_mutex_unlock(&m->render_mutex);
 }
 
 /* ── randomizer ──────────────────────────────────────────────────── */
@@ -548,6 +680,17 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     m->level = 1.0f; m->decay_scale = 1.0f;
     for (int i = 0; i < NUM_INSTRUMENTS; i++) po32_patch_params_zero(&m->patches[i]);
 
+    /* Start background render worker */
+    pthread_mutex_init(&m->render_mutex, NULL);
+    pthread_cond_init(&m->render_cond, NULL);
+    m->render_quit = 0;
+    m->render_q_head = 0;
+    m->render_q_tail = 0;
+    if (pthread_create(&m->render_thread, NULL, render_worker_fn, m) != 0) {
+        strncpy(m->error, "failed to start render thread", sizeof(m->error) - 1);
+        free(m->voice_bufs); free(m); return NULL;
+    }
+
     /* Ensure presets dir exists, scan all kits */
     char presets_dir[MAX_PATH];
     snprintf(presets_dir, sizeof(presets_dir), "%s/presets", module_dir);
@@ -555,14 +698,23 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     scan_unified_kits(m);
     if (m->kit_count > 0) load_kit_at(m, 0);
     else plog("po32: no kits found");
+    plog("po32: instance created");
     return m;
 }
 
 static void destroy_instance(void *instance) {
     po32_drum_t *m = (po32_drum_t *)instance;
     if (!m) return;
+    pthread_mutex_lock(&m->render_mutex);
+    m->render_quit = 1;
+    pthread_cond_signal(&m->render_cond);
+    pthread_mutex_unlock(&m->render_mutex);
+    pthread_join(m->render_thread, NULL);
+    pthread_mutex_destroy(&m->render_mutex);
+    pthread_cond_destroy(&m->render_cond);
     free(m->voice_bufs);
     free(m);
+    plog("po32: instance destroyed");
 }
 
 static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
@@ -743,17 +895,19 @@ static int v2_get_error(void *instance, char *buf, int buf_len) {
 
 static void v2_render_block(void *instance, int16_t *out, int frames) {
     po32_drum_t *m = (po32_drum_t *)instance;
+    flush_log(m);
     float mix[MOVE_FRAMES_PER_BLOCK];
     memset(mix, 0, sizeof(float) * frames);
     for (int v = 0; v < MAX_VOICES; v++) {
         voice_t *voice = &m->voices[v];
-        if (!voice->active) continue;
+        if (__atomic_load_n(&voice->state, __ATOMIC_ACQUIRE) != VOICE_ACTIVE) continue;
         int remaining = (int)(voice->len - voice->pos);
         int n = remaining < frames ? remaining : frames;
         const float *src = voice->buf + voice->pos;
         for (int i = 0; i < n; i++) mix[i] += src[i];
         voice->pos += n;
-        if (voice->pos >= voice->len) voice->active = 0;
+        if (voice->pos >= voice->len)
+            __atomic_store_n(&voice->state, VOICE_IDLE, __ATOMIC_RELEASE);
     }
     float gain = m->level * 28000.0f;
     for (int i = 0; i < frames; i++) {
