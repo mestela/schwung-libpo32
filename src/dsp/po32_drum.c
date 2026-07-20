@@ -255,6 +255,74 @@ static float *patch_field(po32_patch_params_t *p, int idx) {
     return (float *)p + idx;
 }
 
+/* ── per-voice direct addressing (v<N>_<suffix>) ─────────────────────
+ *
+ * The legacy per-voice protocol is stateful: `set_param("inst", N)` selects a
+ * voice, then `inst_*` edits it. That can't express per-voice CC control or
+ * automation — "the current voice" is a meaningless, racy CC target.
+ *
+ * These keys address any of the 16 instruments directly: `v3_freq` writes
+ * m->patches[2].OscFreq. Writes go straight to the patch array (single float
+ * stores; the audio thread only ever *reads* a copy in trigger_voice), so they
+ * are race-free and never disturb `selected_inst`. Values are the raw
+ * normalized field (0-1 float); the four 3-state fields use index 0/1/2. */
+
+typedef enum { VF_FLOAT, VF_ENUM3 } vf_kind_t;
+
+typedef struct {
+    const char *suffix;
+    int         idx;         /* index into po32_patch_params_t float array */
+    vf_kind_t   kind;
+    int         automatable; /* listed in chain_params (host CC/automation) */
+    const char *label;       /* per-voice display name (prefixed "V<N> ") */
+} voice_field_t;
+
+/* Field order matches po32_patch_params_t. The curated `automatable` set is the
+ * continuous, musically useful fields; all 21 remain editable via direct keys,
+ * but only these are offered to the host so the chain stays under its 256-param
+ * cap (12 * 16 + 3 globals = 195). */
+static const voice_field_t VOICE_FIELDS[] = {
+    {"wave",    0, VF_ENUM3, 0, "Wave"},
+    {"freq",    1, VF_FLOAT, 1, "Pitch"},
+    {"atk",     2, VF_FLOAT, 1, "Attack"},
+    {"dcy",     3, VF_FLOAT, 1, "Decay"},
+    {"mmode",   4, VF_ENUM3, 0, "Mod"},
+    {"mrate",   5, VF_FLOAT, 1, "Mod Rate"},
+    {"mamt",    6, VF_FLOAT, 1, "Bend"},
+    {"nfmode",  7, VF_ENUM3, 0, "N.Filt"},
+    {"nffrq",   8, VF_FLOAT, 1, "N.Freq"},
+    {"nfq",     9, VF_FLOAT, 1, "N.Q"},
+    {"nemode", 10, VF_ENUM3, 0, "N.Env"},
+    {"neatk",  11, VF_FLOAT, 1, "N.Atk"},
+    {"nedcy",  12, VF_FLOAT, 1, "N.Dcy"},
+    {"mix",    13, VF_FLOAT, 1, "Noise Mix"},
+    {"dist",   14, VF_FLOAT, 1, "Dist"},
+    {"eqfrq",  15, VF_FLOAT, 0, "EQ Freq"},
+    {"eqgain", 16, VF_FLOAT, 0, "EQ Gain"},
+    {"lvl",    17, VF_FLOAT, 1, "Level"},
+    {"ovel",   18, VF_FLOAT, 0, "Osc Vel"},
+    {"nvel",   19, VF_FLOAT, 0, "Noise Vel"},
+    {"mvel",   20, VF_FLOAT, 0, "Mod Vel"},
+};
+#define VOICE_FIELD_COUNT (sizeof(VOICE_FIELDS) / sizeof(VOICE_FIELDS[0]))
+
+/* Parse "v<N>_<suffix>" (N = 1..16). Returns the field descriptor and sets
+ * *out_voice, or NULL if the key is not a per-voice direct key. */
+static const voice_field_t *voice_field_lookup(const char *key, int *out_voice) {
+    if (key[0] != 'v' || key[1] < '0' || key[1] > '9') return NULL;
+    int n = 0;
+    const char *p = key + 1;
+    while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+    if (*p != '_' || n < 1 || n > NUM_INSTRUMENTS) return NULL;
+    p++;
+    for (size_t i = 0; i < VOICE_FIELD_COUNT; i++) {
+        if (strcmp(p, VOICE_FIELDS[i].suffix) == 0) { *out_voice = n; return &VOICE_FIELDS[i]; }
+    }
+    return NULL;
+}
+
+static float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
 static void load_kit_from_json(po32_drum_t *m, const char *path) {
     char *json = read_text_file(path);
     if (!json) return;
@@ -576,6 +644,18 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
 
 static void v2_set_param(void *instance, const char *key, const char *val) {
     po32_drum_t *m = (po32_drum_t *)instance;
+    int vnum;
+    const voice_field_t *vf = voice_field_lookup(key, &vnum);
+    if (vf) {
+        float *f = patch_field(&m->patches[vnum - 1], vf->idx);
+        if (vf->kind == VF_ENUM3) {
+            int iv = atoi(val);
+            *f = iv <= 0 ? 0.0f : (iv == 1 ? 0.5f : 1.0f);
+        } else {
+            *f = clamp01((float)atof(val));
+        }
+        return;
+    }
     if (strcmp(key, "kit") == 0) {
         int idx = atoi(val);
         if (idx >= 0 && idx < m->kit_count) load_kit_at(m, idx);
@@ -655,6 +735,40 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     po32_drum_t *m = (po32_drum_t *)instance;
+    int vnum;
+    const voice_field_t *vf = voice_field_lookup(key, &vnum);
+    if (vf) {
+        const float *f = patch_field(&m->patches[vnum - 1], vf->idx);
+        if (vf->kind == VF_ENUM3)
+            return snprintf(buf, buf_len, "%d", *f < 0.25f ? 0 : (*f < 0.75f ? 1 : 2));
+        return snprintf(buf, buf_len, "%.4f", (double)*f);
+    }
+    if (strcmp(key, "chain_params") == 0) {
+        /* Quick-access knob mappings for the chain host / Shadow UI, generated
+         * dynamically (schwung tries the plugin before module.json). 3 globals +
+         * the curated per-voice set; enums stay out to keep this well under the
+         * chain's 256-param cap and because per-voice editing owns their UI. */
+        int pos = 0;
+        int kit_max = m->kit_count > 0 ? m->kit_count - 1 : 63;
+        pos += snprintf(buf + pos, buf_len - pos,
+            "[{\"key\":\"kit\",\"name\":\"Kit\",\"type\":\"int\",\"min\":0,\"max\":%d,\"step\":1}"
+            ",{\"key\":\"level\",\"name\":\"Level\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01}"
+            ",{\"key\":\"decay\",\"name\":\"Decay\",\"type\":\"float\",\"min\":0.1,\"max\":3,\"step\":0.05}",
+            kit_max);
+        for (int v = 1; v <= NUM_INSTRUMENTS; v++) {
+            for (size_t i = 0; i < VOICE_FIELD_COUNT; i++) {
+                if (!VOICE_FIELDS[i].automatable) continue;
+                if (pos >= buf_len - 96) break;
+                pos += snprintf(buf + pos, buf_len - pos,
+                    ",{\"key\":\"v%02d_%s\",\"name\":\"V%d %s\",\"type\":\"float\","
+                    "\"min\":0,\"max\":1,\"step\":0.01}",
+                    v, VOICE_FIELDS[i].suffix, v, VOICE_FIELDS[i].label);
+            }
+        }
+        if (pos < buf_len - 1) buf[pos++] = ']';
+        if (pos < buf_len) buf[pos] = '\0';
+        return pos;
+    }
     if (strcmp(key, "name") == 0) {
         return snprintf(buf, buf_len, "Libpo32");
     } else if (strcmp(key, "kit") == 0) {
