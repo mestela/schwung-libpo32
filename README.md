@@ -75,6 +75,32 @@ Navigate to **Sounds → [pad name]** to edit a voice:
 | N.Env  | Exp / Lin / Clap | Noise envelope shape — **Clap** retriggeres the noise in rapid bursts before the main decay |
 | Randomize | —            | Randomize this voice within its role constraints |
 
+### Per-voice CC control & automation
+
+Every voice is addressable **directly by index** with `v<N>_<field>` keys
+(N = 1–16), e.g. `v1_freq`, `v5_dcy`, `v16_lvl`. Unlike the menu editor — which
+is stateful (select a voice, then edit) — these keys target a specific voice
+with no mode, so a host can bind CC or automation lanes to individual voices,
+including several at once. Writes go straight to the voice's patch and never
+disturb the selected-voice state, so per-voice automation is playback-safe.
+
+The curated continuous fields (Pitch, Attack, Decay, Mod Rate, Bend, Noise
+Freq/Q, Noise Atk/Dcy, Noise Mix, Distortion, Level) are published for
+automation through `chain_params`; all 21 fields remain settable directly.
+
+| Suffix | Field | Suffix | Field | Suffix | Field |
+|--------|-------|--------|-------|--------|-------|
+| `wave`  | Waveform    | `mamt`   | Bend (mod amt) | `nedcy` | Noise env decay |
+| `freq`  | Pitch       | `nfmode` | Noise filter   | `mix`   | Osc/noise mix |
+| `atk`   | Osc attack  | `nffrq`  | Noise freq     | `dist`  | Distortion |
+| `dcy`   | Osc decay   | `nfq`    | Noise Q        | `eqfrq` | EQ freq |
+| `mmode` | Mod mode    | `nemode` | Noise env      | `eqgain`| EQ gain |
+| `mrate` | Mod rate    | `neatk`  | Noise env atk  | `lvl`   | Level |
+| `ovel`  | Osc velocity | `nvel`  | Noise velocity | `mvel`  | Mod velocity |
+
+Continuous fields take a normalized `0.0`–`1.0` value; `wave`, `mmode`,
+`nfmode` and `nemode` take an option index `0`–`2`.
+
 ### Randomizer roles
 
 Each pad is assigned a synthesis role which constrains what the randomizer produces:
