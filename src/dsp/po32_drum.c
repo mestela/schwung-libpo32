@@ -6,6 +6,9 @@
  * Both live in the same unified kit list under the `kit` param.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   /* CPU_SET, pthread_setname_np -- the render worker below */
+#endif
 #include "plugin_api_v1.h"
 #include "po32.h"
 #include "po32_synth.h"
@@ -13,6 +16,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -489,8 +493,42 @@ static voice_t *alloc_voice(po32_drum_t *m) {
 
 /* ── background render worker ────────────────────────────────────── */
 
+/*
+ * The render worker ASKS for its scheduling instead of inheriting it.
+ *
+ * It renders every hit before the voice can sound, so it must not be
+ * starved -- but what it inherited was whatever thread ran create_instance:
+ * Schwung's SPI audio callback (SCHED_FIFO 70, core 3) on hosts that build
+ * modules there, a SCHED_OTHER loader thread (cores 0-2) on hosts that build
+ * them off the callback. FIFO 70 on core 3 competed with the audio callback
+ * itself and sat above Move's Link Main (FIFO 35); SCHED_OTHER can be held
+ * off for tens of ms under load, which is a late hit.
+ *
+ * So: SCHED_FIFO 20 -- realtime, below Move's Link Main and audio threads --
+ * on cores 0-2, off the SPI core. The Move process has CAP_SYS_NICE, so the
+ * request succeeds there; refused, the worker keeps what it inherited.
+ */
+static void render_worker_setup(void) {
+#ifdef __linux__
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = 20;
+    pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(0, &set);
+    CPU_SET(1, &set);
+    CPU_SET(2, &set);
+    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+
+    pthread_setname_np(pthread_self(), "po32-render");
+#endif
+}
+
 static void *render_worker_fn(void *arg) {
     po32_drum_t *m = (po32_drum_t *)arg;
+    render_worker_setup();
     plog_async(m, "po32: render worker started");
     while (1) {
         pthread_mutex_lock(&m->render_mutex);
